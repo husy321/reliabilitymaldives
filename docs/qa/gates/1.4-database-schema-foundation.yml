@@ -1,0 +1,16 @@
+schema: 1
+story: '1.4'
+gate: CONCERNS
+status_reason: 'Migration blocked by PostgreSQL server requirement, preventing full acceptance criteria completion.'
+reviewer: 'Quinn'
+updated: '2025-09-02T12:00:00Z'
+top_issues:
+  - id: 'REQ-001'
+    severity: high
+    finding: 'Migration task incomplete - requires PostgreSQL server to execute npx prisma migrate dev'
+    suggested_action: 'Set up PostgreSQL server and complete migration before production deployment'
+  - id: 'TEST-001'
+    severity: medium
+    finding: 'Migration testing cannot be completed without database server'
+    suggested_action: 'Run migration tests once PostgreSQL is available to verify schema creation'
+waiver: { active: false }

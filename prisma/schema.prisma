@@ -1,0 +1,521 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  SALES
+  ACCOUNTS
+  MANAGER
+  ACCOUNTANT
+}
+
+enum ReceivableStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  DISPUTED
+}
+
+enum SalesReportStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+// Follow-up feature enums
+enum FollowUpPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum FollowUpStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum ContactMethod {
+  TEXT
+  CALL
+  EMAIL
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String
+  password_hash String
+  role         UserRole @default(SALES)
+  roleId       String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  roleRef      Role?        @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  sessions     Session[]
+  accounts     Account[]
+  auditLogs    AuditLog[]
+  documents    Document[]
+  documentAuditLogs DocumentAuditLog[]
+  outlets      Outlet[]   @relation("OutletManager")
+  salesReports SalesReport[] @relation("SalesReportSubmitter")
+  staff        Staff?
+  fetchedAttendanceRecords AttendanceRecord[] @relation("AttendanceFetcher")
+  finalizedAttendancePeriods AttendancePeriod[] @relation("PeriodFinalizer")
+  calculatedPayrollPeriods PayrollPeriod[] @relation("PayrollCalculator")
+  exportedPayrolls PayrollExport[] @relation("PayrollExporter")
+  createdFollowUps FollowUp[] @relation("FollowUpCreator")
+  followUpLogs     FollowUpLog[] @relation("FollowUpLogLogger")
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  permissions Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users User[]
+
+  @@map("roles")
+}
+
+model AuditLog {
+  id          String    @id @default(uuid())
+  userId      String?
+  action      String
+  tableName   String
+  recordId    String?
+  oldValues   Json?
+  newValues   Json?
+  ipAddress   String?
+  userAgent   String?
+  timestamp   DateTime  @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
+
+enum DocumentCategory {
+  INVOICE
+  PURCHASE_ORDER
+  DELIVERY_ORDER
+  SALES_RECEIPT
+  OTHER
+}
+
+model Document {
+  id                    String           @id @default(uuid())
+  originalName          String
+  storedPath            String
+  category              DocumentCategory
+  fileSize              Int
+  mimeType              String
+  fileHash              String?          // SHA-256 hash for duplicate detection
+  ipAddress             String?          // IP address for security audit
+  uploadedById          String
+  linkedToCustomerId    String?
+  linkedToReceivableId  String?
+  linkedToSalesReportId String?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  uploadedBy User @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+  linkedSalesReport SalesReport? @relation(fields: [linkedToSalesReportId], references: [id], onDelete: SetNull)
+  auditLogs  DocumentAuditLog[]
+
+  @@map("documents")
+}
+
+enum DocumentAccessType {
+  PREVIEW
+  DOWNLOAD
+  VIEW_LIST
+}
+
+model DocumentAuditLog {
+  id          String             @id @default(uuid())
+  documentId  String
+  userId      String
+  accessType  DocumentAccessType
+  accessedAt  DateTime           @default(now())
+  userRole    UserRole
+  userAgent   String?
+  ipAddress   String?
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, userId])
+  @@index([accessedAt])
+  @@index([userId, accessType, accessedAt])
+  @@map("document_audit_logs")
+}
+
+model Customer {
+  id             String   @id @default(uuid())
+  name           String
+  email          String?
+  phone          String?
+  address        String?
+  paymentTerms   Int      @default(30) // days
+  currentBalance Float    @default(0.0)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relationships
+  receivables Receivable[]
+  followUps   FollowUp[]
+  // documents   Document[] - Will link via linkedToCustomerId
+
+  @@index([name])
+  @@index([isActive])
+  @@index([paymentTerms])
+  @@index([email])
+  @@index([phone])
+  @@map("customers")
+}
+
+model Receivable {
+  id              String           @id @default(uuid())
+  invoiceNumber   String           @unique
+  customerId      String
+  amount          Float            // Using Float for SQLite compatibility
+  invoiceDate     DateTime
+  dueDate         DateTime
+  paidAmount      Float            @default(0.0)
+  status          ReceivableStatus @default(PENDING)
+  assignedTo      UserRole         @default(SALES)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  // Relationships
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  followUps FollowUp[]
+  // documents Document[] - Will link via linkedToReceivableId
+
+  @@index([customerId, status])
+  @@index([dueDate])
+  @@index([status, assignedTo])
+  @@index([invoiceNumber])
+  @@index([invoiceDate])
+  @@map("receivables")
+}
+
+// Follow-up management for receivables
+model FollowUp {
+  id             String          @id @default(uuid())
+  receivableId   String
+  customerId     String
+  followupDate   DateTime
+  priority       FollowUpPriority
+  contactPerson  String
+  contactMethod  ContactMethod
+  initialNotes   String?
+  status         FollowUpStatus   @default(PENDING)
+  createdById    String
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  completedAt    DateTime?
+
+  // Relations
+  receivable     Receivable       @relation(fields: [receivableId], references: [id], onDelete: Restrict)
+  customer       Customer         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  createdBy      User             @relation(name: "FollowUpCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  logs           FollowUpLog[]
+
+  @@index([followupDate])
+  @@index([priority])
+  @@index([status])
+  @@index([customerId])
+  @@index([receivableId])
+  @@map("invoice_followups")
+}
+
+model FollowUpLog {
+  id             String         @id @default(uuid())
+  followUpId     String
+  contactDate    DateTime
+  contactMethod  ContactMethod
+  personContacted String
+  outcome        String
+  nextStep       String?
+  nextStepDate   DateTime?
+  loggedById     String
+  createdAt      DateTime       @default(now())
+
+  // Relations
+  followUp       FollowUp       @relation(fields: [followUpId], references: [id], onDelete: Cascade)
+  loggedBy       User           @relation(name: "FollowUpLogLogger", fields: [loggedById], references: [id], onDelete: Restrict)
+
+  @@index([followUpId])
+  @@index([contactDate])
+  @@index([nextStepDate])
+  @@index([followUpId, contactDate])
+  @@map("followup_logs")
+}
+
+model Outlet {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  location    String
+  managerId   String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  manager      User          @relation(name: "OutletManager", fields: [managerId], references: [id], onDelete: Restrict)
+  salesReports SalesReport[]
+
+  @@index([managerId])
+  @@index([isActive])
+  @@map("outlets")
+}
+
+model SalesReport {
+  id              String            @id @default(uuid())
+  outletId        String
+  date            DateTime
+  cashDeposits    Float
+  cardSettlements Float
+  totalSales      Float
+  submittedById   String
+  status          SalesReportStatus @default(DRAFT)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  outlet      Outlet @relation(fields: [outletId], references: [id], onDelete: Restrict)
+  submittedBy User   @relation(name: "SalesReportSubmitter", fields: [submittedById], references: [id], onDelete: Restrict)
+  documents   Document[]
+
+  @@unique([outletId, date], name: "unique_outlet_date")
+  @@index([outletId, date])
+  @@index([status])
+  @@index([submittedById])
+  @@map("sales_reports")
+}
+
+model Staff {
+  id           String   @id @default(uuid())
+  employeeId   String   @unique
+  name         String
+  department   String
+  shiftSchedule String
+  isActive     Boolean  @default(true)
+  userId       String   @unique
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attendanceRecords AttendanceRecord[]
+  payrollRecords PayrollRecord[]
+
+  @@index([employeeId])
+  @@index([name])
+  @@index([department])
+  @@index([isActive])
+  @@map("staff")
+}
+
+enum AttendancePeriodStatus {
+  PENDING
+  FINALIZED
+  LOCKED
+}
+
+model AttendancePeriod {
+  id           String                 @id @default(uuid())
+  startDate    DateTime
+  endDate      DateTime
+  status       AttendancePeriodStatus @default(PENDING)
+  finalizedBy  String?
+  finalizedAt  DateTime?
+  unlockReason String?
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  finalizedByUser User? @relation(name: "PeriodFinalizer", fields: [finalizedBy], references: [id], onDelete: SetNull)
+  attendanceRecords AttendanceRecord[]
+  payrollPeriods PayrollPeriod[]
+
+  @@index([startDate, endDate])
+  @@index([status])
+  @@index([finalizedBy])
+  @@map("attendance_periods")
+}
+
+model AttendanceRecord {
+  id              String    @id @default(uuid())
+  staffId         String
+  employeeId      String
+  date            DateTime
+  clockInTime     DateTime?
+  clockOutTime    DateTime?
+  totalHours      Float?
+  zkTransactionId String
+  fetchedAt       DateTime  @default(now())
+  fetchedById     String
+  syncJobId       String?   // Job that created this record for automated sync tracking
+  syncedAt        DateTime? // When this record was synced automatically
+  lastSyncStatus  String?   // SUCCESS, FAILED, PARTIAL for sync tracking
+  conflictResolved Boolean  @default(false) // Whether conflicts were resolved
+  conflictResolvedBy String? // User ID who resolved conflicts
+  conflictNotes   String?   // Notes about conflict resolution
+  periodId        String?   // Link to AttendancePeriod for finalization workflow
+  isFinalized     Boolean   @default(false) // Quick lookup for period finalization status
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  staff     Staff @relation(fields: [staffId], references: [id], onDelete: Restrict)
+  fetchedBy User  @relation(name: "AttendanceFetcher", fields: [fetchedById], references: [id], onDelete: Restrict)
+  period    AttendancePeriod? @relation(fields: [periodId], references: [id], onDelete: SetNull)
+
+  @@unique([staffId, date, zkTransactionId], name: "unique_attendance_record")
+  @@index([staffId, date])
+  @@index([date])
+  @@index([fetchedById])
+  @@index([employeeId])
+  @@index([syncJobId]) // For querying records by sync job
+  @@index([lastSyncStatus]) // For monitoring sync status
+  @@index([conflictResolved]) // For finding unresolved conflicts
+  @@index([periodId]) // For querying records by period
+  @@index([isFinalized]) // For finalization status queries
+  @@map("attendance_records")
+}
+
+enum PayrollPeriodStatus {
+  PENDING
+  CALCULATING
+  CALCULATED
+  APPROVED
+}
+
+model PayrollPeriod {
+  id                 String              @id @default(uuid())
+  attendancePeriodId String
+  startDate          DateTime
+  endDate            DateTime
+  status             PayrollPeriodStatus @default(PENDING)
+  calculatedBy       String?
+  calculatedAt       DateTime?
+  totalHours         Float               @default(0.0)
+  totalOvertimeHours Float               @default(0.0)
+  totalAmount        Float               @default(0.0)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  attendancePeriod    AttendancePeriod @relation(fields: [attendancePeriodId], references: [id], onDelete: Restrict)
+  calculatedByUser    User?            @relation(name: "PayrollCalculator", fields: [calculatedBy], references: [id], onDelete: SetNull)
+  payrollRecords      PayrollRecord[]
+  payrollExports      PayrollExport[]
+
+  @@index([attendancePeriodId])
+  @@index([status])
+  @@index([calculatedBy])
+  @@index([startDate, endDate])
+  @@map("payroll_periods")
+}
+
+model PayrollRecord {
+  id               String    @id @default(uuid())
+  payrollPeriodId  String
+  employeeId       String
+  standardHours    Float     @default(0.0)
+  overtimeHours    Float     @default(0.0)
+  standardRate     Float
+  overtimeRate     Float
+  grossPay         Float     @default(0.0)
+  calculationData  Json
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  payrollPeriod PayrollPeriod @relation(fields: [payrollPeriodId], references: [id], onDelete: Restrict)
+  employee      Staff         @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@index([payrollPeriodId])
+  @@index([employeeId])
+  @@index([payrollPeriodId, employeeId])
+  @@map("payroll_records")
+}
+
+enum PayrollExportStatus {
+  GENERATING
+  COMPLETED
+  FAILED
+}
+
+model PayrollExport {
+  id              String              @id @default(uuid())
+  payrollPeriodId String
+  exportedBy      String
+  exportedAt      DateTime            @default(now())
+  exportFormat    String              @default("PDF")
+  fileName        String
+  filePath        String
+  fileSize        Int                 @default(0)
+  status          PayrollExportStatus @default(GENERATING)
+  metadata        Json?
+  createdAt       DateTime            @default(now())
+
+  payrollPeriod PayrollPeriod @relation(fields: [payrollPeriodId], references: [id], onDelete: Restrict)
+  exportedByUser User          @relation(name: "PayrollExporter", fields: [exportedBy], references: [id], onDelete: Restrict)
+
+  @@index([payrollPeriodId])
+  @@index([exportedBy])
+  @@index([status])
+  @@index([exportedAt])
+  @@map("payroll_exports")
+}

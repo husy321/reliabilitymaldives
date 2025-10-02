@@ -1,0 +1,267 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getServerSession } from 'next-auth/next';
+import { PrismaClient } from '@prisma/client';
+import { z } from 'zod';
+import { authOptions } from '../auth/[...nextauth]/route';
+import type { SalesReportFormData } from '../../../../types/sales-report';
+
+const prisma = new PrismaClient();
+
+// Validation schema for creating sales reports
+const createSalesReportSchema = z.object({
+  outletId: z.string().uuid('Valid outlet ID required'),
+  date: z.string().datetime('Valid date required'),
+  cashDeposits: z.number().min(0, 'Cash deposits cannot be negative'),
+  cardSettlements: z.number().min(0, 'Card settlements cannot be negative'),
+  totalSales: z.number().min(0, 'Total sales cannot be negative'),
+  status: z.enum(['DRAFT', 'SUBMITTED']).optional().default('DRAFT')
+});
+
+// Validation schema for querying sales reports
+const querySalesReportsSchema = z.object({
+  page: z.string().optional().default('1'),
+  limit: z.string().optional().default('10'),
+  status: z.enum(['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED']).optional(),
+  outletId: z.string().uuid().optional(),
+  startDate: z.string().datetime().optional(),
+  endDate: z.string().datetime().optional(),
+  sortBy: z.enum(['date', 'totalSales', 'createdAt', 'status']).optional().default('date'),
+  sortOrder: z.enum(['asc', 'desc']).optional().default('desc')
+});
+
+/**
+ * GET /api/sales-reports - Fetch sales reports with filtering and pagination
+ */
+export async function GET(request: NextRequest) {
+  try {
+    // Check authentication
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Parse and validate query parameters
+    const url = new URL(request.url);
+    const queryParams = Object.fromEntries(url.searchParams.entries());
+    
+    const validatedParams = querySalesReportsSchema.parse(queryParams);
+    
+    const page = parseInt(validatedParams.page);
+    const limit = parseInt(validatedParams.limit);
+    const skip = (page - 1) * limit;
+
+    // Build where clause based on user role and filters
+    const whereClause: any = {};
+    
+    // Role-based filtering
+    if (session.user.role === 'MANAGER') {
+      // Managers can only see reports from their outlets
+      const userOutlets = await prisma.outlet.findMany({
+        where: { managerId: session.user.id },
+        select: { id: true }
+      });
+      whereClause.outletId = { in: userOutlets.map(o => o.id) };
+    }
+    // ADMIN and ACCOUNTS can see all reports
+
+    // Apply additional filters
+    if (validatedParams.status) {
+      whereClause.status = validatedParams.status;
+    }
+    
+    if (validatedParams.outletId) {
+      whereClause.outletId = validatedParams.outletId;
+    }
+    
+    if (validatedParams.startDate || validatedParams.endDate) {
+      whereClause.date = {};
+      if (validatedParams.startDate) {
+        whereClause.date.gte = new Date(validatedParams.startDate);
+      }
+      if (validatedParams.endDate) {
+        whereClause.date.lte = new Date(validatedParams.endDate);
+      }
+    }
+
+    // Build order by clause
+    const orderBy: any = {};
+    orderBy[validatedParams.sortBy] = validatedParams.sortOrder;
+
+    // Fetch reports with pagination
+    const [reports, totalCount] = await Promise.all([
+      prisma.salesReport.findMany({
+        where: whereClause,
+        include: {
+          outlet: {
+            select: {
+              id: true,
+              name: true,
+              location: true
+            }
+          },
+          submittedBy: {
+            select: {
+              id: true,
+              name: true,
+              email: true
+            }
+          },
+          documents: {
+            select: {
+              id: true,
+              originalName: true,
+              category: true,
+              fileSize: true,
+              createdAt: true
+            }
+          }
+        },
+        orderBy,
+        skip,
+        take: limit
+      }),
+      prisma.salesReport.count({ where: whereClause })
+    ]);
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        reports,
+        pagination: {
+          page,
+          limit,
+          totalCount,
+          totalPages: Math.ceil(totalCount / limit),
+          hasNext: page * limit < totalCount,
+          hasPrev: page > 1
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('GET /api/sales-reports error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({
+        error: 'Invalid query parameters',
+        details: error.errors
+      }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      error: 'Failed to fetch sales reports'
+    }, { status: 500 });
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+/**
+ * POST /api/sales-reports - Create a new sales report
+ */
+export async function POST(request: NextRequest) {
+  try {
+    // Check authentication
+    const session = await getServerSession(authOptions);
+    if (!session?.user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Only managers can create sales reports
+    if (session.user.role !== 'MANAGER' && session.user.role !== 'ADMIN') {
+      return NextResponse.json({ 
+        error: 'Forbidden - Only managers can create sales reports' 
+      }, { status: 403 });
+    }
+
+    // Parse and validate request body
+    const body = await request.json();
+    const validatedData = createSalesReportSchema.parse(body);
+
+    // Convert date string to Date object
+    const reportDate = new Date(validatedData.date);
+
+    // Check if manager has access to the outlet
+    if (session.user.role === 'MANAGER') {
+      const outlet = await prisma.outlet.findFirst({
+        where: {
+          id: validatedData.outletId,
+          managerId: session.user.id
+        }
+      });
+
+      if (!outlet) {
+        return NextResponse.json({
+          error: 'You do not have access to this outlet'
+        }, { status: 403 });
+      }
+    }
+
+    // Check for duplicate report (same outlet and date)
+    const existingReport = await prisma.salesReport.findUnique({
+      where: {
+        unique_outlet_date: {
+          outletId: validatedData.outletId,
+          date: reportDate
+        }
+      }
+    });
+
+    if (existingReport) {
+      return NextResponse.json({
+        error: 'A sales report for this outlet and date already exists'
+      }, { status: 409 });
+    }
+
+    // Create the sales report
+    const salesReport = await prisma.salesReport.create({
+      data: {
+        outletId: validatedData.outletId,
+        date: reportDate,
+        cashDeposits: validatedData.cashDeposits,
+        cardSettlements: validatedData.cardSettlements,
+        totalSales: validatedData.totalSales,
+        submittedById: session.user.id,
+        status: validatedData.status
+      },
+      include: {
+        outlet: {
+          select: {
+            id: true,
+            name: true,
+            location: true
+          }
+        },
+        submittedBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: salesReport,
+      message: 'Sales report created successfully'
+    }, { status: 201 });
+
+  } catch (error) {
+    console.error('POST /api/sales-reports error:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({
+        error: 'Invalid request data',
+        details: error.errors
+      }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      error: 'Failed to create sales report'
+    }, { status: 500 });
+  } finally {
+    await prisma.$disconnect();
+  }
+}
