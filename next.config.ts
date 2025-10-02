@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Disable ESLint during build (we run it separately)
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+
   // Optimize development performance
   experimental: {
     cpus: 4, // Use more CPUs for better performance
