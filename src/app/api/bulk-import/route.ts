@@ -24,7 +24,7 @@ function parseCSV(csvText: string): any[] {
     const row: any = {};
 
     headers.forEach((header, index) => {
-      let value = values[index] || '';
+      const value = values[index] || '';
 
       // Type conversion based on field name
       if (header.includes('amount') || header.includes('Amount') || header.includes('paymentTerms') || header.includes('PaymentTerms')) {
