@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
 import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
-import { authOptions } from '../../../auth/[...nextauth]/route';
+import { authOptions } from '@/lib/auth';
 
 // use shared prisma instance
 
@@ -15,7 +15,7 @@ const approveRequestSchema = z.object({
  */
 export async function POST(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  context: { params: Promise<{ id: string }> }
 ) {
   try {
     // Check authentication
@@ -26,11 +26,12 @@ export async function POST(
 
     // Only accounts and admin can approve reports
     if (!['ACCOUNTS', 'ADMIN'].includes(session.user.role)) {
-      return NextResponse.json({ 
-        error: 'Forbidden - Only accounts staff can approve reports' 
+      return NextResponse.json({
+        error: 'Forbidden - Only accounts staff can approve reports'
       }, { status: 403 });
     }
 
+    const params = await context.params;
     const reportId = params.id;
 
     // Validate UUID format
