@@ -1,20 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth/next';
-import { authOptions } from '../../auth/[...nextauth]/route';
+import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
 import { updateFollowUpSchema } from '@/validators/followupValidator';
 
 const paramsSchema = z.object({ id: z.string().uuid() });
 
-export async function GET(_request: NextRequest, context: { params: Promise<{ id: string }> } | { params: { id: string } }) {
+export async function GET(
+  _request: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    // Next.js App Router may pass params as a Promise
-    const raw = 'then' in (context as any).params ? await (context as any).params : (context as any).params;
-    const { id } = paramsSchema.parse(raw);
+    const params = await context.params;
+    const { id } = paramsSchema.parse(params);
 
     const item = await prisma.followUp.findUnique({
       where: { id },
@@ -37,13 +39,16 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
   }
 }
 
-export async function PATCH(request: NextRequest, context: { params: Promise<{ id: string }> } | { params: { id: string } }) {
+export async function PATCH(
+  request: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const raw = 'then' in (context as any).params ? await (context as any).params : (context as any).params;
-    const { id } = paramsSchema.parse(raw);
+    const params = await context.params;
+    const { id } = paramsSchema.parse(params);
     const body = await request.json();
     const parsed = updateFollowUpSchema.parse(body);
 

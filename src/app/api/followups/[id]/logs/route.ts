@@ -7,13 +7,16 @@ import { createFollowUpLogSchema } from '@/validators/followupValidator';
 
 const paramsSchema = z.object({ id: z.string().uuid() });
 
-export async function GET(_request: NextRequest, context: { params: Promise<{ id: string }> } | { params: { id: string } }) {
+export async function GET(
+  _request: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const raw = 'then' in (context as any).params ? await (context as any).params : (context as any).params;
-    const { id } = paramsSchema.parse(raw);
+    const params = await context.params;
+    const { id } = paramsSchema.parse(params);
 
     const logs = await prisma.followUpLog.findMany({
       where: { followUpId: id },
@@ -28,13 +31,16 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
   }
 }
 
-export async function POST(request: NextRequest, context: { params: Promise<{ id: string }> } | { params: { id: string } }) {
+export async function POST(
+  request: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
   try {
     const session = await getServerSession(authOptions);
     if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const raw = 'then' in (context as any).params ? await (context as any).params : (context as any).params;
-    const { id } = paramsSchema.parse(raw);
+    const params = await context.params;
+    const { id } = paramsSchema.parse(params);
     const body = await request.json();
     const parsed = createFollowUpLogSchema.parse(body);
 
